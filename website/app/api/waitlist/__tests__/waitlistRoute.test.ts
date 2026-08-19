@@ -20,7 +20,9 @@ vi.mock('../../../../lib/supabase-server', () => ({ getSupabaseServer }));
 import { POST } from '../route';
 
 /** Stub the Supabase insert used by the route. */
-function stubInsert(result: { error?: { code?: string; message: string } | null }) {
+function stubInsert(result: {
+  error?: { code?: string; message: string; details?: string; hint?: string } | null;
+}) {
   const insert = vi.fn(async () => ({ error: result.error ?? null }));
   const from = vi.fn(() => ({ insert }));
   getSupabaseServer.mockReturnValue({ from });
@@ -157,13 +159,21 @@ describe('public waitlist endpoint', () => {
     expect(res.status).toBe(503);
   });
 
-  it('does not report success when the insert fails', async () => {
-    stubInsert({ error: { message: 'connection refused' } });
+  it('returns the Supabase error message and details when the insert fails', async () => {
+    stubInsert({
+      error: {
+        message: "Could not find the table 'public.waitlist'",
+        details: 'The table is missing from the schema cache.',
+      },
+    });
 
     const res = await POST(signupRequest('someone@example.com'));
 
     // A visitor who sees "you're on the list" but was never saved is the worst
     // outcome here.
     expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toEqual({
+      error: "Could not find the table 'public.waitlist' — The table is missing from the schema cache.",
+    });
   });
 });
