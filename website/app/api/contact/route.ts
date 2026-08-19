@@ -33,9 +33,14 @@ export async function POST(request: NextRequest) {
       .insert({ name, email, message });
 
     if (error) {
-      console.error('[contact] insert error:', error.message);
+      const supabaseError = [error.message, error.details].filter(Boolean).join(' — ');
+      console.error('[contact] insert error:', {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
       return NextResponse.json(
-        { error: 'Unable to send your message right now. Please try again.' },
+        { error: supabaseError },
         { status: 500 },
       );
     }
