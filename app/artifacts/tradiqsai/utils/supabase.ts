@@ -1,7 +1,7 @@
-import 'expo-sqlite/localStorage/install';
 import 'react-native-url-polyfill/auto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { AppState } from 'react-native';
+import { supabaseAuthStorage } from './secureStorage';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const supabasePublishableKey =
@@ -18,8 +18,9 @@ let client: SupabaseClient | null = null;
  * Lazily creates the Supabase client on first use. Lazy so that merely
  * importing this module never crashes the app when the EXPO_PUBLIC_
  * env vars aren't set yet — callers get a clear error at call time instead.
- * Auth sessions persist to standard React Native storage (localStorage,
- * backed by expo-sqlite via the install shim above).
+ * Native auth sessions persist through Expo SecureStore. The adapter has a
+ * browser-only localStorage fallback for Expo web, where a native keychain is
+ * unavailable.
  */
 function getSupabase(): SupabaseClient {
   if (!isSupabaseConfigured) {
@@ -30,7 +31,7 @@ function getSupabase(): SupabaseClient {
   if (!client) {
     client = createClient(supabaseUrl, supabasePublishableKey, {
       auth: {
-        storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
+        storage: supabaseAuthStorage,
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false,
