@@ -317,43 +317,6 @@ export default function Home() {
         </div>
       </section>
 
-      <footer className="border-t border-white/5 bg-[#0A0A0A]">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 gap-10 px-6 py-16 md:grid-cols-4">
-          <div className="col-span-2 md:col-span-1">
-            <p className="text-lg font-bold text-white">TradiQs <span className="text-[#00F0FF]">AI</span></p>
-            <p className="mt-4 max-w-xs text-sm leading-6 text-gray-500">Institutional-grade market intelligence for traders who refuse to guess.</p>
-          </div>
-          <div>
-            <p className="mb-4 text-xs font-bold uppercase tracking-[0.18em] text-white">Platform</p>
-            <div className="grid gap-3 text-sm">
-              <Link href="/#features" className="cursor-pointer text-gray-500 transition-colors hover:text-white">Features</Link>
-              <Link href="/#pricing" className="cursor-pointer text-gray-500 transition-colors hover:text-white">Pricing</Link>
-              <Link href="/about" className="cursor-pointer text-gray-500 transition-colors hover:text-white">About</Link>
-            </div>
-          </div>
-          <div>
-            <p className="mb-4 text-xs font-bold uppercase tracking-[0.18em] text-white">Brokers</p>
-            <div className="grid grid-cols-2 gap-x-5 gap-y-3 text-sm text-gray-500"><span>MetaTrader 4</span><span>MetaTrader 5</span><span>cTrader</span><span>Exness</span><span>Binance</span><span>Bybit</span><span>Interactive Brokers</span><span>Webull</span><span>FTMO</span><span>Topstep</span></div>
-          </div>
-          <div>
-            <p className="mb-4 text-xs font-bold uppercase tracking-[0.18em] text-white">Resources</p>
-            <div className="grid gap-3 text-sm">
-              <Link href="/blog" className="cursor-pointer text-gray-500 transition-colors hover:text-white">Blog</Link>
-              <Link href="/contact" className="cursor-pointer text-gray-500 transition-colors hover:text-white">Contact</Link>
-              <Link href="/#waitlist" className="cursor-pointer text-gray-500 transition-colors hover:text-white">Waitlist</Link>
-            </div>
-          </div>
-          <div>
-            <p className="mb-4 text-xs font-bold uppercase tracking-[0.18em] text-white">Legal</p>
-            <div className="grid gap-3 text-sm">
-              <Link href="/privacy" className="cursor-pointer text-gray-500 transition-colors hover:text-white">Privacy</Link>
-              <Link href="/terms" className="cursor-pointer text-gray-500 transition-colors hover:text-white">Terms</Link>
-              <span className="text-gray-500">© 2026 TradiQs AI</span>
-            </div>
-          </div>
-        </div>
-        <div className="border-t border-white/5 px-6 py-6 text-center text-xs leading-5 text-gray-600">Risk disclaimer: Trading leveraged products and digital assets carries a high level of risk and may not be suitable for all investors. Historical performance is not indicative of future results. TradiQs AI does not provide investment advice.</div>
-      </footer>
     </main>
   );
 }

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import MarketTicker from '../components/market-ticker';
+import { Footer } from '../components/site';
 
 /**
  * Public marketing shell: sticky site header + live market ticker.
@@ -37,6 +38,7 @@ export default function MarketingLayout({ children }: Readonly<{ children: React
       </header>
       <MarketTicker />
       {children}
+      <Footer />
     </>
   );
 }
