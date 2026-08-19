@@ -20,6 +20,21 @@ async function startFreshApp(): Promise<void> {
       messages = { create: createMock };
     },
   }));
+  vi.doMock("../middlewares/identity", () => {
+    const ANONYMOUS_USER = "anonymous";
+    return {
+      ANONYMOUS_USER,
+      identity: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        res.locals.userId =
+          req.header("authorization") === "Bearer test-pro" ? "test-pro-user" : ANONYMOUS_USER;
+        next();
+      },
+      requestUserId: (res: express.Response) => res.locals.userId ?? ANONYMOUS_USER,
+    };
+  });
+  vi.doMock("../lib/aiQuota", () => ({
+    reserveAiQuota: vi.fn().mockResolvedValue({ allowed: true, tier: "pro" }),
+  }));
   const { default: oracleRouter } = await import("./oracle");
   const app: Express = express();
   app.use(express.json());
@@ -38,7 +53,10 @@ async function request(
 ): Promise<{ status: number; body: any }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: body !== undefined ? { "content-type": "application/json" } : {},
+    headers: {
+      authorization: "Bearer test-pro",
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+    },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   return { status: res.status, body: await res.json() };
@@ -52,6 +70,9 @@ const USER_MESSAGE = { role: "user", content: "What do you think of gold?" };
 
 beforeEach(async () => {
   vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
+  vi.stubEnv("SUPABASE_URL", "");
+  vi.stubEnv("EXPO_PUBLIC_SUPABASE_URL", "");
+  vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "");
   // Oracle tests exercise Anthropic behavior, not a real Supabase project.
   // The cache has dedicated integration coverage once its migration is live.
   vi.stubEnv("SUPABASE_STRATEGY_BRIEF_CACHE_ENABLED", "false");
@@ -68,6 +89,16 @@ afterEach(async () => {
 });
 
 describe("POST /oracle/chat", () => {
+  it("rejects unauthenticated AI requests before they reach the provider", async () => {
+    const res = await fetch(`${baseUrl}/oracle/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [USER_MESSAGE] }),
+    });
+    expect(res.status).toBe(401);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   it("returns the model's reply for a valid request", async () => {
     createMock.mockResolvedValue(textReply("Gold looks constructive. Not financial advice."));
     const { status, body } = await request("POST", "/oracle/chat", {
@@ -214,7 +245,7 @@ describe("POST /oracle/chat", () => {
     }
     const res = await fetch(`${baseUrl}/oracle/chat`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", authorization: "Bearer test-pro" },
       body: JSON.stringify({ messages: [USER_MESSAGE] }),
     });
     expect(res.status).toBe(429);
@@ -349,11 +380,11 @@ describe("POST /oracle/chart-analysis", () => {
     expect(createMock).toHaveBeenCalledTimes(1);
   });
 
-  it("requests the signal-plan format (ENTRY ZONE, STOP LOSS, TAKE PROFIT, BIAS) in signal mode", async () => {
+  it("returns the validated structured signal format in signal mode", async () => {
     await startAppAs("user-pro-123", true);
     createMock.mockResolvedValue(
       textReply(
-        "BIAS: BUY\nENTRY ZONE: 2400–2410\nSTOP LOSS: 2375\nTAKE PROFIT: 2460\nRISK NOTE: Not financial advice.",
+        '{"asset":"XAUUSD","direction":"BUY","entry":2405,"takeProfit":2460,"stopLoss":2375,"confidence":82,"reasoning":"Bullish structure; not financial advice."}',
       ),
     );
     const { status, body } = await request("POST", "/oracle/chart-analysis", {
@@ -361,14 +392,19 @@ describe("POST /oracle/chart-analysis", () => {
       mode: "signal",
     });
     expect(status).toBe(200);
-    expect(body.analysis).toContain("BUY");
+    expect(body.signal).toMatchObject({
+      asset: "XAUUSD",
+      direction: "BUY",
+      entry: 2405,
+      takeProfit: 2460,
+      stopLoss: 2375,
+    });
 
-    // The system prompt must instruct the model to produce all four labels.
+    // The system prompt must require the current machine-readable contract.
     const systemPrompt: string = createMock.mock.calls[0]![0].system;
-    expect(systemPrompt).toContain("BIAS");
-    expect(systemPrompt).toContain("ENTRY ZONE");
-    expect(systemPrompt).toContain("STOP LOSS");
-    expect(systemPrompt).toContain("TAKE PROFIT");
+    expect(systemPrompt).toContain("valid JSON");
+    expect(systemPrompt).toContain("takeProfit");
+    expect(systemPrompt).toContain("stopLoss");
   });
 
   it("returns 503 when the AI provider key is not configured", async () => {

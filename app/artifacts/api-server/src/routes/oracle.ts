@@ -10,6 +10,7 @@ import { logger } from "../lib/logger";
 import { rateLimit } from "../middlewares/rateLimit";
 import { identity, requestUserId, ANONYMOUS_USER } from "../middlewares/identity";
 import { hasProAccess } from "../lib/entitlement";
+import { reserveAiQuota } from "../lib/aiQuota";
 import { z } from "zod";
 
 const router: IRouter = Router();
@@ -199,7 +200,12 @@ function normalizeMessages(
   return out;
 }
 
-router.post("/oracle/chat", oracleRateLimit, async (req, res) => {
+router.post("/oracle/chat", identity(), oracleRateLimit, async (req, res) => {
+  const userId = requestUserId(res);
+  if (userId === ANONYMOUS_USER) {
+    res.status(401).json({ error: "Sign in required." });
+    return;
+  }
   const parsed = SendOracleChatBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request body" });
@@ -221,11 +227,22 @@ router.post("/oracle/chat", oracleRateLimit, async (req, res) => {
     res.status(400).json({ error: "No user message to respond to." });
     return;
   }
+  try {
+    const quota = await reserveAiQuota(userId, "oracle_chat", 1_200);
+    if (!quota.allowed) {
+      res.status(429).json({ error: "Daily AI request quota reached. Please try again tomorrow." });
+      return;
+    }
+  } catch (err) {
+    logger.error({ err, userId }, "Oracle chat quota check unavailable");
+    res.status(503).json({ error: "AI quota verification is temporarily unavailable." });
+    return;
+  }
 
   try {
     const message = await client.messages.create({
       model: process.env["ORACLE_MODEL"] ?? "claude-sonnet-5",
-      max_tokens: 8192,
+      max_tokens: 1200,
       system: parsed.data.tradingContext
         ? `${SYSTEM_PROMPT}\n\n${buildContextPrompt(parsed.data.tradingContext)}`
         : SYSTEM_PROMPT,
@@ -304,7 +321,12 @@ router.post("/oracle/chart-analysis", identity(), chartAnalysisRateLimit, async 
  * A failure here is cosmetic — the caller falls back to a static line — so
  * errors return a plain message rather than blocking a deployment.
  */
-router.post("/oracle/strategy-brief", oracleRateLimit, async (req, res) => {
+router.post("/oracle/strategy-brief", identity(), oracleRateLimit, async (req, res) => {
+  const userId = requestUserId(res);
+  if (userId === ANONYMOUS_USER) {
+    res.status(401).json({ error: "Sign in required." });
+    return;
+  }
   const parsed = SendStrategyBriefBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request body" });
@@ -316,6 +338,23 @@ router.post("/oracle/strategy-brief", oracleRateLimit, async (req, res) => {
     res.status(503).json({
       error: "The strategy engine isn't configured yet (missing ANTHROPIC_API_KEY).",
     });
+    return;
+  }
+  try {
+    const quota = await reserveAiQuota(userId, "strategy_brief", 300, { requiresPro: true });
+    if (!quota.allowed) {
+      const status = quota.reason === "pro_required" ? 403 : 429;
+      res.status(status).json({
+        error:
+          quota.reason === "pro_required"
+            ? "Pro subscription required."
+            : "Daily AI request quota reached. Please try again tomorrow.",
+      });
+      return;
+    }
+  } catch (err) {
+    logger.error({ err, userId }, "Strategy brief quota check unavailable");
+    res.status(503).json({ error: "AI quota verification is temporarily unavailable." });
     return;
   }
 

@@ -86,7 +86,13 @@ async function startFreshApp(): Promise<void> {
   const { createAutopilotRouter } = await import("./autopilot");
   const app: Express = express();
   app.use(express.json());
-  app.use(createAutopilotRouter(undefined, undefined, (_req, _res, next) => next()));
+  app.use(
+    createAutopilotRouter(
+      async (token) => (token === "test-pro" ? "test-pro-user" : null),
+      async () => "pro",
+      (_req, _res, next) => next(),
+    ),
+  );
   await new Promise<void>((resolve) => {
     server = app.listen(0, "127.0.0.1", () => resolve());
   });
@@ -101,7 +107,10 @@ async function request(
 ): Promise<{ status: number; body: any }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: body !== undefined ? { "content-type": "application/json" } : {},
+    headers: {
+      authorization: "Bearer test-pro",
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+    },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   return { status: res.status, body: await res.json() };
@@ -114,6 +123,9 @@ beforeEach(async () => {
   // No DB wipe needed: startFreshApp installs a brand-new in-memory db fake
   // per test, so every case starts from freshly seeded defaults.
   await startFreshApp();
+  // Authenticated callers get their own state; establish its simulation
+  // clock at suite setup instead of relying on the retired anonymous seed.
+  await request("GET", "/autopilot");
 });
 
 afterEach(async () => {
@@ -124,6 +136,11 @@ afterEach(async () => {
 });
 
 describe("GET /autopilot", () => {
+  it("rejects callers without an authenticated, entitled session", async () => {
+    const res = await fetch(`${baseUrl}/autopilot`);
+    expect(res.status).toBe(401);
+  });
+
   it("returns a schema-valid snapshot with the seeded roster and boot logs", async () => {
     const { status, body } = await request("GET", "/autopilot");
     expect(status).toBe(200);
@@ -210,7 +227,7 @@ describe("GET /autopilot/history", () => {
     // history write before responding).
     expect([...historyRows.values()]).toEqual([
       {
-        userId: "anonymous",
+        userId: "test-pro-user",
         day: "Wed Aug 05 2026",
         dayIso: "2026-08-05",
         pnl: finishedPnl,
@@ -219,14 +236,14 @@ describe("GET /autopilot/history", () => {
   });
 
   it("restores persisted history after a restart", async () => {
-    historyRows.set("anonymous:2026-08-03", {
-      userId: "anonymous",
+    historyRows.set("test-pro-user:2026-08-03", {
+      userId: "test-pro-user",
       day: "Mon Aug 03 2026",
       dayIso: "2026-08-03",
       pnl: -12.5,
     });
-    historyRows.set("anonymous:2026-08-04", {
-      userId: "anonymous",
+    historyRows.set("test-pro-user:2026-08-04", {
+      userId: "test-pro-user",
       day: "Tue Aug 04 2026",
       dayIso: "2026-08-04",
       pnl: 88.25,
@@ -237,13 +254,21 @@ describe("GET /autopilot/history", () => {
     const { createAutopilotRouter } = await import("./autopilot");
     const app = express();
     app.use(express.json());
-    app.use(createAutopilotRouter(undefined, undefined, (_req, _res, next) => next()));
+    app.use(
+      createAutopilotRouter(
+        async (token) => (token === "test-pro" ? "test-pro-user" : null),
+        async () => "pro",
+        (_req, _res, next) => next(),
+      ),
+    );
     const restarted = await new Promise<Server>((resolve) => {
       const s = app.listen(0, "127.0.0.1", () => resolve(s));
     });
     try {
       const { address, port } = restarted.address() as AddressInfo;
-      const res = await fetch(`http://${address}:${port}/autopilot/history`);
+      const res = await fetch(`http://${address}:${port}/autopilot/history`, {
+        headers: { authorization: "Bearer test-pro" },
+      });
       const body = (await res.json()) as any;
       expect(res.status).toBe(200);
       // Most recent first.
@@ -432,11 +457,20 @@ describe("Pro-only bot enforcement", () => {
   }
 
   async function botFor(token: string, botId: string) {
-    const res = await fetch(`${proBase}/autopilot`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const body = (await res.json()) as any;
-    return body.bots.find((b: any) => b.id === botId);
+    const userId = await verifier(token);
+    const originalTier = userId ? tiers.get(userId) : undefined;
+    if (userId) tiers.set(userId, "pro");
+    try {
+      const res = await fetch(`${proBase}/autopilot`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await res.json()) as any;
+      return body.bots.find((b: any) => b.id === botId);
+    } finally {
+      if (!userId) return;
+      if (originalTier === undefined) tiers.delete(userId);
+      else tiers.set(userId, originalTier);
+    }
   }
 
   it("blocks a free user from starting the Pro-only bot", async () => {
@@ -616,27 +650,24 @@ describe("Pro-only bot enforcement", () => {
       expect((await botFor(token, "quantum-inst")).running).toBe(true);
     }
 
-    it("stops the running Pro bot on the next read after a downgrade", async () => {
+    it("does not expose a running Pro bot after a downgrade", async () => {
       await startProBotAsPaidUser();
 
       tiers.set("lapsing-user", "free"); // subscription lapses
-      const bot = await botFor("token-lapsing-user", "quantum-inst");
-      expect(bot.running).toBe(false);
+      const res = await fetch(`${proBase}/autopilot`, {
+        headers: { authorization: "Bearer token-lapsing-user" },
+      });
+      expect(res.status).toBe(403);
     });
 
-    it("explains the shutdown in the activity log", async () => {
+    it("does not expose activity logs after a downgrade", async () => {
       await startProBotAsPaidUser();
       tiers.set("lapsing-user", "free");
 
       const res = await fetch(`${proBase}/autopilot`, {
         headers: { authorization: "Bearer token-lapsing-user" },
       });
-      const body = (await res.json()) as any;
-      expect(
-        body.logs.some((l: any) =>
-          l.text.includes("Elite subscription required to keep it running"),
-        ),
-      ).toBe(true);
+      expect(res.status).toBe(403);
     });
 
     it("does not let the master toggle resurrect the Pro bot", async () => {
@@ -654,12 +685,13 @@ describe("Pro-only bot enforcement", () => {
       expect(body.error).toMatch(/requires a Pro or Elite subscription/i);
     });
 
-    it("stops the Pro bot when the tier lookup starts failing", async () => {
+    it("fails closed when the tier lookup starts failing", async () => {
       await startProBotAsPaidUser();
       lookupFails = true; // e.g. Supabase outage -- must fail closed
-      expect(
-        (await botFor("token-lapsing-user", "quantum-inst")).running,
-      ).toBe(false);
+      const res = await fetch(`${proBase}/autopilot`, {
+        headers: { authorization: "Bearer token-lapsing-user" },
+      });
+      expect(res.status).toBe(403);
     });
 
     it("leaves the bot running while the user is still entitled", async () => {
@@ -722,17 +754,14 @@ describe("Pro-only bot enforcement", () => {
 
     // Every endpoint that advances the simulation must revoke first,
     // otherwise a lapsed user keeps accruing Pro P&L by polling that one.
-    it("stops the Pro bot when only the history endpoint is called", async () => {
+    it("blocks history reads after a downgrade", async () => {
       await startProBotAsPaidUser();
       tiers.set("lapsing-user", "free");
 
       const res = await fetch(`${proBase}/autopilot/history`, {
         headers: { authorization: "Bearer token-lapsing-user" },
       });
-      expect(res.status).toBe(200);
-      expect(
-        (await botFor("token-lapsing-user", "quantum-inst")).running,
-      ).toBe(false);
+      expect(res.status).toBe(403);
     });
 
     it("stops the Pro bot when only logs are cleared", async () => {
@@ -774,7 +803,7 @@ describe("autopilot per-user state", () => {
     const { createAutopilotRouter } = await import("./autopilot");
     const app = express();
     app.use(express.json());
-    app.use("/api", createAutopilotRouter(verifier));
+    app.use("/api", createAutopilotRouter(verifier, async () => "pro"));
     await new Promise<void>((resolve) => {
       authServer = app.listen(0, "127.0.0.1", () => resolve());
     });
@@ -846,16 +875,9 @@ describe("autopilot per-user state", () => {
     expect(bobAgain.body.logs.length).toBeGreaterThan(0);
   });
 
-  it("gives unauthenticated callers a shared anonymous state", async () => {
+  it("rejects unauthenticated callers instead of returning shared state", async () => {
     const first = await call("/autopilot");
-    expect(first.status).toBe(200);
-    await call("/autopilot/bots/grid-matrix", {
-      method: "PUT",
-      body: { running: true },
-    });
-    const second = await call("/autopilot");
-    const bot = second.body.bots.find((b: any) => b.id === "grid-matrix");
-    expect(bot.running).toBe(true);
+    expect(first.status).toBe(401);
 
     // ...and a signed-in user is unaffected by anonymous changes.
     const carol = await call("/autopilot", { token: "token-carol" });
@@ -954,7 +976,7 @@ describe("GET /autopilot/history assurance policy", () => {
 
     app.use(
       "/api",
-      createAutopilotRouter(verifier, undefined, strictAssurance, softAssurance),
+      createAutopilotRouter(verifier, async () => "pro", strictAssurance, softAssurance),
     );
     await new Promise<void>((resolve) => {
       assuranceServer = app.listen(0, "127.0.0.1", () => resolve());
@@ -1006,11 +1028,11 @@ describe("GET /autopilot/history assurance policy", () => {
     expect(body.code).toBe("mfa_required");
   });
 
-  it("still serves history to anonymous callers (soft assurance does not require sign-in)", async () => {
+  it("rejects anonymous history callers even when soft assurance is unavailable", async () => {
     assuranceResult = "service_unavailable";
     const { status, body } = await historyFor(); // no token
-    expect(status).toBe(200);
-    expect(body).toHaveProperty("days");
+    expect(status).toBe(401);
+    expect(body.error).toMatch(/sign in/i);
   });
 
   it("write endpoints still fail when assurance service is unavailable (strict variant)", async () => {

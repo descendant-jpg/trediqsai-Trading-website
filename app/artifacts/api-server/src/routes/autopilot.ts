@@ -512,6 +512,14 @@ export function createAutopilotRouter(
   router.get("/autopilot", async (_req, res, next) => {
     try {
       const userId = requestUserId(res);
+      if (userId === ANONYMOUS) {
+        res.status(401).json({ error: "Sign in required." });
+        return;
+      }
+      if (!(await hasProAccess(userId, tierLookup))) {
+        res.status(403).json({ error: "AutoPilot requires a Pro or Elite subscription" });
+        return;
+      }
       const state = await stateFor(userId);
       const proRevoked = await enforceProEntitlement(userId, state, tierLookup);
       const assetRevoked = await enforceSelectedAssetEntitlement(userId, state, tierLookup);
@@ -529,6 +537,14 @@ export function createAutopilotRouter(
   router.get("/autopilot/history", requireReadAssurance, async (_req, res, next) => {
     try {
       const userId = requestUserId(res);
+      if (userId === ANONYMOUS) {
+        res.status(401).json({ error: "Sign in required." });
+        return;
+      }
+      if (!(await hasProAccess(userId, tierLookup))) {
+        res.status(403).json({ error: "AutoPilot requires a Pro or Elite subscription" });
+        return;
+      }
       const state = await stateFor(userId);
       // This endpoint advances the simulation, so a lapsed user could keep
       // accruing Pro P&L here alone. Revoke before any time passes.

@@ -3,6 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { logger } from "../lib/logger";
 import { rateLimit } from "../middlewares/rateLimit";
+import { identity, requestUserId, ANONYMOUS_USER } from "../middlewares/identity";
+import { reserveAiQuota } from "../lib/aiQuota";
 
 const router: IRouter = Router();
 const cache = new Map<string, { expiresAt: number; value: Analysis }>();
@@ -66,9 +68,22 @@ async function narrativeFor(analysis: Omit<Analysis, "narrative">): Promise<stri
   }
 }
 
-router.post("/analysis/multi-timeframe", analysisRateLimit, async (req, res) => {
+router.post("/analysis/multi-timeframe", identity(), analysisRateLimit, async (req, res) => {
+  const userId = requestUserId(res);
+  if (userId === ANONYMOUS_USER) {
+    return res.status(401).json({ error: "Sign in required." });
+  }
   const parsed = requestSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "A valid market symbol is required." });
+  try {
+    const quota = await reserveAiQuota(userId, "multi_timeframe", 180);
+    if (!quota.allowed) {
+      return res.status(429).json({ error: "Daily AI request quota reached. Please try again tomorrow." });
+    }
+  } catch (err) {
+    logger.error({ err, userId }, "Multi-timeframe quota check unavailable");
+    return res.status(503).json({ error: "AI quota verification is temporarily unavailable." });
+  }
   const { display, ticker } = resolveTicker(parsed.data.symbol);
   const cached = cache.get(display);
   if (cached && cached.expiresAt > Date.now()) return res.json(cached.value);

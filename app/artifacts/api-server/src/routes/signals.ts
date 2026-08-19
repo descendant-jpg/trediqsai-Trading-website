@@ -1,5 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { Router, type IRouter } from "express";
+import { hasProAccess, type TierLookup } from "../lib/entitlement";
+import { identity, requestUserId, ANONYMOUS_USER, type TokenVerifier } from "../middlewares/identity";
 
 /*
   Apply manually in the Supabase SQL editor:
@@ -25,12 +27,13 @@ export interface ProductionSignal {
   assetClass: string;
   action: string;
   status: "Active" | "Won" | "Lost" | "Pending";
-  riskReward: number;
-  entry: number;
-  stopLoss: number;
+  riskReward: number | "LOCKED";
+  entry: number | "LOCKED";
+  stopLoss: number | "LOCKED";
   takeProfits: { price: number; hit: boolean }[];
   timestamp: number;
-  pips: number;
+  pips: number | "LOCKED";
+  redacted?: boolean;
 }
 
 type SignalRow = {
@@ -39,9 +42,19 @@ type SignalRow = {
   stop_loss: number; take_profits: ProductionSignal["takeProfits"]; timestamp: string; pips: number;
 };
 
-const router: IRouter = Router();
-
-router.get("/signals", async (_req, res) => {
+export function createSignalsRouter(
+  verifier?: TokenVerifier,
+  tierLookup?: TierLookup,
+): IRouter {
+  const router: IRouter = Router();
+  router.use("/signals", identity(verifier));
+  router.get("/signals", async (_req, res) => {
+    const userId = requestUserId(res);
+    if (userId === ANONYMOUS_USER) {
+      res.status(401).json({ error: "Sign in required." });
+      return;
+    }
+    const hasFullAccess = await hasProAccess(userId, tierLookup);
   const url = process.env["SUPABASE_URL"] ?? process.env["EXPO_PUBLIC_SUPABASE_URL"];
   const key = process.env["SUPABASE_SERVICE_ROLE_KEY"];
   if (!url || !key) {
@@ -56,17 +69,43 @@ router.get("/signals", async (_req, res) => {
       .select("id,pair,asset_class,action,status,risk_reward,entry,stop_loss,take_profits,timestamp,pips")
       .order("timestamp", { ascending: false });
     if (error) throw error;
-    const signals: ProductionSignal[] = ((data ?? []) as SignalRow[]).map((row) => ({
-      id: row.id, pair: row.pair, assetClass: row.asset_class, action: row.action,
-      status: row.status, riskReward: Number(row.risk_reward), entry: Number(row.entry),
-      stopLoss: Number(row.stop_loss), takeProfits: typeof row.take_profits === "string" ? JSON.parse(row.take_profits) : row.take_profits ?? [],
-      timestamp: Date.parse(row.timestamp), pips: Number(row.pips),
-    }));
+    const signals: ProductionSignal[] = ((data ?? []) as SignalRow[]).map((row) => {
+      const common = {
+        id: row.id,
+        pair: row.pair,
+        assetClass: row.asset_class,
+        action: row.action,
+        status: row.status,
+        timestamp: Date.parse(row.timestamp),
+      };
+      if (!hasFullAccess) {
+        return {
+          ...common,
+          riskReward: "LOCKED" as const,
+          entry: "LOCKED" as const,
+          stopLoss: "LOCKED" as const,
+          takeProfits: [],
+          pips: "LOCKED" as const,
+          redacted: true,
+        };
+      }
+      return {
+        ...common,
+        riskReward: Number(row.risk_reward),
+        entry: Number(row.entry),
+        stopLoss: Number(row.stop_loss),
+        takeProfits:
+          typeof row.take_profits === "string" ? JSON.parse(row.take_profits) : row.take_profits ?? [],
+        pips: Number(row.pips),
+      };
+    });
     res.json(signals);
   } catch (error) {
     console.error("Live signals query failed:", error);
     res.status(500).json({ error: "Live signals database query failed." });
   }
-});
+  });
+  return router;
+}
 
-export default router;
+export default createSignalsRouter();
